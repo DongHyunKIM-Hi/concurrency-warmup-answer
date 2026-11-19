@@ -12,17 +12,19 @@ import java.time.LocalTime;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * [2단계: 예외 처리] 시간 검증과 겹침 판정, 에러 응답을 채웁니다. 아직 동시성 제어는 없습니다.
+ * 회의실 예약의 동시성을 처리하는 서비스.
  *
- * 이 단계에서 되는 것 — S6(정상), S7(차례로 겹치면 409), S9(맞닿기만 하면 201), 입력 검증(400)
- * 이 단계에서 여전히 깨지는 것 — S8(동시 5건). 3단계에서 락 범위를 설계해 고칩니다.
+ * 락 범위는 회의실 단위다. {@link #roomLocks}는 회의실 ID마다 다른 락 객체를 준다.
+ * 그래서 같은 회의실의 요청은 하나씩 처리되고, 다른 회의실의 요청은 동시에 처리된다. (시나리오 S10)
  */
 @Service
 public class ReservationService {
 
     private final ReservationStore reservationStore;
+    private final ConcurrentHashMap<String, Object> roomLocks = new ConcurrentHashMap<>();
 
     public ReservationService(ReservationStore reservationStore) {
         this.reservationStore = reservationStore;
@@ -38,16 +40,20 @@ public class ReservationService {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST, "from은 to보다 빨라야 합니다.");
         }
 
-        boolean conflict = reservationStore.findByRoomId(roomId).stream()
-                .anyMatch(r -> r.overlaps(from, to));
-        if (conflict) {
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.TIME_CONFLICT, "이미 겹치는 시간에 예약이 있습니다.");
-        }
+        Object lock = roomLocks.computeIfAbsent(roomId, k -> new Object());
+        synchronized (lock) {
+            // 겹침 확인과 저장을 같은 락 안에서 수행해,
+            // 그 사이 다른 요청이 같은 시간대를 먼저 차지하지 못하게 한다.
+            boolean conflict = reservationStore.findByRoomId(roomId).stream()
+                    .anyMatch(r -> r.overlaps(from, to));
+            if (conflict) {
+                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.TIME_CONFLICT, "이미 겹치는 시간에 예약이 있습니다.");
+            }
 
-        // 여기서 "겹침 확인"과 "저장" 사이에 다른 요청이 끼어들 수 있다 -> 3단계에서 해결한다.
-        Reservation reservation = new Reservation(userId, from, to);
-        reservationStore.save(roomId, reservation);
-        return reservation;
+            Reservation reservation = new Reservation(userId, from, to);
+            reservationStore.save(roomId, reservation);
+            return reservation;
+        }
     }
 
     public List<RoomReservation> findByUser(String userId) {

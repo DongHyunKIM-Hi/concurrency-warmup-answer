@@ -1,28 +1,48 @@
-# 1단계 — 정상 경로
+# 2단계 — 예외 처리와 시나리오
 
 > [!NOTE]
 > 과제의 **모범 답안**입니다. 정답은 하나가 아니며, 좋은 구현의 한 예시입니다.
 > 단계는 커밋으로 나뉘어 있습니다: `step1`(정상 경로) → `step2`(예외 처리) → `step3`(최종). `git checkout`으로 오갑니다.
 >
-> 이 단계에서 `bash check-scenarios.sh`를 돌리면 **6/11**이 나옵니다. 설계대로입니다 — 정상 흐름(S1, S6, S11)은 돌아가지만 예외 처리(S4, S7)와 동시성(S2, S3, S8)이 아직 없습니다.
+> 이 단계에서 `bash check-scenarios.sh`를 돌리면 **8/11**이 나옵니다. 동시 요청 시나리오(S2, S3, S8)만 실패하는 것이 설계대로입니다. 락은 3단계에서 넣습니다.
 > 해설 영상용 **중간 단계** 코드입니다. 최종본은 `step3` 커밋(`main`)에 있습니다.
 > 단계 전체 설명과 실측 결과는 `docs/stages.md`를 보세요.
 
-## 이 단계에서 만든 것
+## 1단계에서 추가한 것
 
-- `CouponService`, `ReservationService` 두 서비스 클래스. 컨트롤러는 위임만 합니다.
-- 쿠폰: 보유 목록에서 **할인액이 가장 큰 1장**을 골라 적용하고 삭제
-- 예약: 시간을 파싱해 저장
-- 사용자별 예약 조회 (저장소가 회의실 기준이라 뒤집어서 모음)
+- `GlobalExceptionHandler` — 에러 응답을 `{"code","message"}` 형식으로 통일
+- 쿠폰
+  - 보유 쿠폰 없음 → **404** `NO_COUPON_AVAILABLE`
+  - `amount`가 0 이하 → **400** `INVALID_REQUEST`
+  - 잘못된 `type` → **400** `INVALID_REQUEST`
+- 예약
+  - 시간 형식 오류, `from >= to` → **400** `INVALID_REQUEST`
+  - 시간 겹침 → **409** `TIME_CONFLICT` (제공된 `Reservation.overlaps()` 사용)
+  - 끝과 시작이 맞닿기만 한 경우는 겹치지 않음 → **201**
 
-## 일부러 하지 않은 것
+## 여전히 하지 않은 것
 
-| 빠진 것 | 어느 단계에서 | 그래서 지금은 |
-|---|---|---|
-| 입력 검증과 에러 응답 | 2단계 | 잘못된 입력이 **500**으로 나갑니다 |
-| 쿠폰 없음 404 | 2단계 | `orElseThrow()`가 그대로 터져 **500** |
-| 겹침 판정 409 | 2단계 | 겹치는 예약도 **201**로 저장됩니다 |
-| **동시성 제어** | 3단계 | 쿠폰 1장에 동시 5건을 보내면 **전부 200** |
+**동시성 제어가 없습니다.** 이 단계의 목적은 *혼자 보낼 때는 완벽한 서버*를 만드는 것입니다.
+
+두 서비스에 주석으로 표시해 두었습니다.
+
+- `CouponService` — `// 여기서 "찾기"와 "삭제" 사이에 다른 요청이 끼어들 수 있다`
+- `ReservationService` — `// 여기서 "겹침 확인"과 "저장" 사이에 다른 요청이 끼어들 수 있다`
+
+## 깨뜨려 보기
+
+```bash
+# 쿠폰 1장에 동시 5건 — 1건만 200이어야 하는데 전부 200이 됩니다
+curl -s -X POST localhost:8080/api/users/u3/coupons -H 'Content-Type: application/json' -d '{"type":"PERCENT_15"}'
+for i in 1 2 3 4 5; do curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/users/u3/coupons/use \
+  -H 'Content-Type: application/json' -d '{"amount":10000}' & done; wait
+
+# 같은 회의실·같은 시간 동시 5건 — 1건만 201이어야 하는데 여러 건 201이 됩니다
+ROOM=R8-$RANDOM; for i in 1 2 3 4 5; do curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/reservations \
+  -H 'Content-Type: application/json' -d "{\"roomId\":\"$ROOM\",\"userId\":\"U$i\",\"from\":\"09:00\",\"to\":\"10:00\"}" & done; wait
+```
+
+쿠폰은 저장소 지연(50\~100ms) 때문에 거의 매번 깨집니다. 예약은 지연이 없어 20회 중 15\~18회 깨지므로, 한 번에 안 되면 2\~3회 반복하세요.
 
 ## 실행
 
@@ -30,9 +50,6 @@
 ./gradlew bootRun   # 포트 8080
 ```
 
-데이터는 메모리에만 있습니다. 서버를 재시작하면 비워집니다.
-
 ## 다음 단계
 
-2단계(`step2` 커밋)에서 입력 검증과 에러 응답을 채웁니다.
-동시성은 3단계(`step3` 커밋)까지 손대지 않습니다 — **깨지는 것을 먼저 보여 주기 위해서**입니다.
+3단계(`step3` 커밋)에서 락의 범위를 설계해 해결합니다. 바뀌는 것은 서비스 2개뿐입니다.

@@ -1,12 +1,15 @@
 package com.practicefintech.warmup.domain.coupon.controller;
 
 import com.practicefintech.warmup.common.enums.CouponType;
+import com.practicefintech.warmup.common.enums.ErrorCode;
+import com.practicefintech.warmup.common.exception.ApiException;
 import com.practicefintech.warmup.domain.coupon.model.request.IssueCouponRequest;
 import com.practicefintech.warmup.domain.coupon.model.request.UseCouponRequest;
 import com.practicefintech.warmup.domain.coupon.model.response.CouponView;
 import com.practicefintech.warmup.domain.coupon.model.response.UseCouponResponse;
 import com.practicefintech.warmup.domain.coupon.repository.CouponStore;
 import com.practicefintech.warmup.domain.coupon.service.CouponService;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -44,7 +47,10 @@ public class CouponController {
     }
 
     private CouponType parseType(String type) {
-        // 1단계는 올바른 값만 들어온다고 보고 그대로 변환한다. 검증은 2단계에서 추가한다.
-        return CouponType.valueOf(type);
+        try {
+            return CouponType.valueOf(type);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST, "type이 올바르지 않습니다: " + type);
+        }
     }
 }
